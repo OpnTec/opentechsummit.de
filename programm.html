@@ -5,13 +5,11 @@
 <script type="text/javascript">
 
 var KEY = '1NY3YC1AWC8xotzD2X0dMZuBSGS5ErjEtkYboGwKuZWc';
-var GID_VERSION_TRACK = '14433307387';
+var WORKSHEETS = 'https://spreadsheets.google.com/feeds/worksheets/' + KEY + '/public/basic?alt=json';
 
-function worksheet_url(gid) {
-  return 'https://docs.google.com/spreadsheets/d/' + KEY + '/gviz/tq?gid=' + gid;
-}
+var TITLE_VERSIONS = 'Versioning';
 
-var track = new Array();
+var tracks = new Array();
 var num_tracks = -1, loaded_tracks = 0;
 
 function append(nodename, innerhtml, parent) {
@@ -33,7 +31,7 @@ function status(str) {
 function errmsg(msg) {
   m = "Sorry, that didn't work. :\\ Please try reloading the page.";
   m += '<hr/>';
-  m += '<span class="label label-danger">Details</span> ' + msg;
+  m += '<span class="label label-danger">Error</span> ' + msg;
   status(m).setAttribute('class', 'alert alert-danger');
   return false;
 }
@@ -63,51 +61,104 @@ function httpreq() {
   return errmsg(noreq);
 }
 
-function httpget(url, func) {
+function httpget(url, func, wait) {
   var req = httpreq();
   if (!req)
     return false;
 
   req.onreadystatechange = function() {
-    if (req.readyState != req.DONE)
+    if (req.readyState !== 4)
       return;
     if (req.status == 200)
       func(req, url);
     else
-      errmsg('XHR ' + req.status + ' ' + req.statusText);
+      errmsg('XHR ' + req.status + ' ' + req.statusText + ' ');
   }
 
-  req.open('GET', url, true);
+  req.open('GET', url, !wait);
   req.send('');
   return true;
 }
 
-function table(req, name, gid) {
-  name += ' (gid=' + gid + ')';
+function rowcol(entry) {
+  var rc = /^R([0-9]*)C([0-9]+)$/;
+  var a1 = /^([A-Z]+)([0-9]+)$/;
+  var ret = new Object;
+  var mat = rc.exec(entry.title.$t);
 
+  if (mat) {
+    ret.row = parseInt(mat[1]);
+    ret.col = parseInt(mat[2]);
+  } else {
+    mat = a1.exec(entry.title.$t);
+    if (!mat)
+      return mat;
+    ret.row = parseInt(mat[2]);
+    ret.col = mat[1];
+  }
+
+  return ret;
+}
+
+function feed_json(req, name) {
   var resp = req.responseText;
   if (!resp)
-    return errmsg('No data available for ' + name + '.');
-
-  resp = resp.replace(/^[^\(]*\(/, '').replace(/\);$/, '');
-  resp = resp.replace(/"v":null/g, '"v":""');
-  resp = resp.replace(/null/g, '{"v":""}');
-  resp = resp.replace(/new Date\([^\)]*\)/g, '""');
+    return errmsg('No data available for ' + name + ' feed.');
 
   try {
     var ws = JSON.parse(resp + '');
   } catch(e) {
-    return errmsg('Can not parse ' + name + ' response.<br/>' + e);
+    return errmsg('Can not parse ' + name + ' feed response.<br/>' + e);
   }
 
-  if (ws.version != '0.6')
-    return errmsg('Unknown ' + name + ' internal worksheet version ' + ws.version + ', version 0.6 is needed.');
-  if (ws.status != 'ok')
-    return errmsg("Incorrect " + name + " internal worksheet status '" + ws.status + "', 'ok' is needed.");
-  if (!ws.table)
-    return errmsg('No information table exists in the ' + name + ' worksheet.');
+  if (!ws.feed)
+    return errmsg('No ' + name + ' feed received.');
 
-  return ws.table;
+  ws.feed.linkhref = function(entry, anchor) {
+    for (var i = 0; i < this.entry[entry].link.length; i++)
+      if ('http://schemas.google.com/spreadsheets/2006#' + anchor == this.entry[entry].link[i].rel)
+        return this.entry[entry].link[i].href + '?alt=json';
+    return false;
+  }
+
+
+  ws.feed.make_table = function() {
+    var i, lastrc, rc, r;
+
+    this.rows = new Array;
+    this.cols = new Object;
+
+    this.cell = function(row, col, debug) {
+      var c = this.cols[col] ? this.cols[col] : col;
+      if (this.rows[row].c[c])
+        return this.entry[this.rows[row].c[c]].content.$t.trim();
+      return '';
+    }
+
+    for (i = 0; rowcol(this.entry[i]).row == 1; i++)
+      this.cols[this.entry[i].content.$t] = rowcol(this.entry[i]).col;
+
+    for (lastrc = rowcol(this.entry[i - 1]); i < this.entry.length; i++) {
+      rc = rowcol(this.entry[i]);
+
+      if (rc.row != lastrc.row) {
+        if (r)
+          this.rows.push(r);
+        r = new Object;
+        r.c = new Object;
+      }
+
+      r.c[rc.col] = i;
+      lastrc = rc;
+    }
+
+    if (r)
+      this.rows.push(r);
+
+    return this;
+  }
+
+  return ws.feed;
 }
 
 function track_done(ret) {
@@ -136,28 +187,43 @@ function track_done(ret) {
   return ret;
 }
 
-function get_track(name, gid, pos) {
-  httpget(worksheet_url(gid), function(req) {
-    var t = table(req, name, gid);
+function get_track(name, cellsfeed, pos) {
+  httpget(cellsfeed, function(req) {
+    var i;
+    var time, title, abstract, gn, fn, speaker, org;
+    var html;
+    var t = feed_json(req, name).make_table();
     if (!t)
       return track_done(t);
 
-    var i, c, time;
-    var title, abstract, speaker, org;
-    var html;
-
     for (i = 0; i < t.rows.length; i++) {
-      time = t.rows[i].c[1].v[0].toString() + ':' +
-        (t.rows[i].c[1].v[1] < 10 ? '0' : '') + t.rows[i].c[1].v[1].toString();
+      time = t.cell(i, 'Time');
+      title = t.cell(i, 'Session Topic');
+      abstract = t.cell(i, 'Abstract of talk or project');
 
-      title = t.rows[i].c[18].v;
-      abstract = t.rows[i].c[20].v;
-      speaker = t.rows[i].c[3].v + ' ' + t.rows[i].c[4].v;
-      org = t.rows[i].c[5].v;
+      gn = t.cell(i, 'Given Name');
+      fn = t.cell(i, 'Family Name');
+      if (gn && fn)
+        speaker = gn + ' ' + fn;
+      else if (gn)
+        speaker = gn;
+      else if (fn)
+        speaker = fn;
+      else
+        speaker = '';
 
-      html = '<span class="label label-primary">' + time + '</span> ';
-      html += title;
-      if (speaker != ' ' || org) {
+      org = t.cell(i, 'Organization');
+
+      if (title == speaker)
+        speaker = '';
+      if (title == org)
+        org = '';
+      if (speaker == org)
+        org = '';
+
+      html = '<span class="label label-primary">' + time + '</span> ' + title;
+
+      if (speaker || org) {
         html += ' - ';
         if (speaker) {
           html += speaker;
@@ -168,56 +234,78 @@ function get_track(name, gid, pos) {
           html += org;
       }
 
-      append('li', html, track[pos]).setAttribute('class', 'list-group-item');
+      append('li', html, tracks[pos]).setAttribute('class', 'list-group-item');
     }
 
     return track_done();
   });
 }
 
-function get_versions(req) {
-  var i, e, name = 'Versions', track_name = -1, gid = -1, col;
-  var t = table(req, name, GID_VERSION_TRACK);
-
+function got_versions(req) {
+  var i, name = 'Versioning', col;
+  var t = feed_json(req, name).make_table();
   if (!t)
-    return track_done(t);
+    return t;
 
-  for (i = 0; i < t.cols.length; i++)
-    switch (t.cols[i].label) {
-    case 'Track':
-      track_name = i;
-      break;
-    case 'GID':
-      gid = i;
-      break;
-    }
-
-  if (-1 == track_name || -1 == gid) {
-    if (-1 == track_name && -1 == gid)
+  if (!t.cols['Track'] || !t.cols['GID']) {
+    if (!t.cols['Track'] && !t.cols['GID'])
       col = 'Track and no column named GID';
-    else if (-1 == track_name)
+    else if (!t.cols['Track'])
       col = 'Track';
     else
       col = 'GID';
 
-    track_done();
     return errmsg('Worksheet ' + name + ' has no column named ' + col + '.');
   }
 
   num_tracks = t.rows.length;
-  status('Loaded 0 of ' + num_tracks + ' track' + (num_tracks != 1 ? 's' : '') + '...');
+  if (num_tracks)
+    status('Loaded 0 of ' + num_tracks + ' track' + (num_tracks != 1 ? 's' : '') + '...');
+  else
+    status('Loaded 0 tracks.').setAttribute('class', 'alert alert-warning');
 
   for (i = 0; i < num_tracks; i++) {
-    track[i] = append('ul');
-    track[i].setAttribute('class', 'list-group');
-    append('h3', t.rows[i].c[track_name].v, track[i]);
-    get_track(t.rows[i].c[track_name].v, t.rows[i].c[gid].v, i);
+    tracks[i] = append('ul');
+    tracks[i].setAttribute('class', 'list-group');
+    tracks[i].setAttribute('gid', t.cell(i, 'GID'));
+    append('h3', t.cell(i, 'Track'), tracks[i]);
+  }
+}
+
+function got_worksheets(req) {
+  var i, j, re;
+  var name = 'worksheets';
+  var t = feed_json(req, name);
+  if (!t)
+    return t;
+
+  for (i = 0; i < t.entry.length; i++)
+    if (TITLE_VERSIONS == t.entry[i].title.$t)
+      break;
+
+  if (i == t.entry.length)
+    return errmsg('No ' + TITLE_VERSIONS + ' worksheet found.');
+
+  httpget(t.linkhref(i, 'cellsfeed'), got_versions, true);
+
+  for (i = 0; i < num_tracks; i++) {
+    re = new RegExp('\\?gid=' + tracks[i].getAttribute('gid') + '&');
+
+    for (j = 0; j < t.entry.length; j++) {
+      if (!re.test(t.linkhref(j, 'exportcsv')))
+        continue;
+      get_track(tracks[i].childNodes[0].innerHTML, t.linkhref(j, 'cellsfeed'), i);
+      break;
+    }
+
+    if (j == t.entry.length)
+      return errmsg('Worksheet for ' + tracks[i].childNodes[0].innerHTML + ' (gid=' + tracks[i].getAttribute('gid') + ') not found.');
   }
 }
 
 function go() {
   status('Loading...');
-  httpget(worksheet_url(GID_VERSION_TRACK), get_versions);
+  httpget(WORKSHEETS, got_worksheets);
 }
 </script>
 </head>
@@ -225,7 +313,7 @@ function go() {
 <div class="container" id="container">
 <div class="jumbotron" style="text-align:center">
 <h2>OpenTechSummit 2015</h2>
-<p>Thursday, May 14<br/>Kalkscheune, Johannisstrasse 2, 10117 Berlin</p>
+<p>Thursday, May 14<br/>Kalkscheune, Johannisstraße 2, 10117 Berlin</p>
 </div>
 <div id="status" class="alert alert-info">
 <noscript>Please enable JavaScript to view the program.</noscript>
