@@ -2,6 +2,10 @@
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
 <link href="css/bootstrap.min.css" rel="stylesheet" type="text/css"/>
+<style type="text/css">
+li:hover{cursor:pointer;}
+.list-group-item:hover{background-color:#f5f5f5;}
+</style>
 <script type="text/javascript">
 
 var KEY = '1NY3YC1AWC8xotzD2X0dMZuBSGS5ErjEtkYboGwKuZWc';
@@ -19,6 +23,16 @@ function append(nodename, innerhtml, parent) {
   if (!parent)
     parent = document.getElementById('container');
   return parent.appendChild(e);
+}
+
+function toggle(parent) {
+  var i, n;
+
+  for (i = 0; i < parent.childNodes.length && !n; i++)
+    if ('P' == parent.childNodes[i].nodeName) {
+      n = parent.childNodes[i];
+      n.style.display = ('none' == n.style.display ? 'block' : 'none');
+    }
 }
 
 function status(str) {
@@ -191,7 +205,7 @@ function get_track(name, cellsfeed, pos) {
   httpget(cellsfeed, function(req) {
     var i;
     var time, title, abstract, gn, fn, speaker, org;
-    var html;
+    var html, li, p;
     var t = feed_json(req, name).make_table();
     if (!t)
       return track_done(t);
@@ -221,7 +235,9 @@ function get_track(name, cellsfeed, pos) {
       if (speaker == org)
         org = '';
 
-      html = '<span class="label label-primary">' + time + '</span> ' + title;
+      html = '<div class="row">';
+      html += '<div class="col-xs-1"><span class="label label-primary">' + time + '</span></div>';
+      html += '<div class="col-xs-11">' + title;
 
       if (speaker || org) {
         html += ' - ';
@@ -234,7 +250,15 @@ function get_track(name, cellsfeed, pos) {
           html += org;
       }
 
-      append('li', html, tracks[pos]).setAttribute('class', 'list-group-item');
+      html += '</div>';
+
+      li = append('li', html, tracks[pos]);
+      li.setAttribute('class', 'list-group-item');
+      li.setAttribute('onclick', 'toggle(this)');
+
+      p = append('p', abstract, li);
+      p.setAttribute('class', 'list-group-item-text');
+      p.setAttribute('style', 'display:none');
     }
 
     return track_done();
